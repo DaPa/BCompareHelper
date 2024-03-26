@@ -1,0 +1,51 @@
+name: Build BCompareHelper
+
+on: [push]
+
+jobs:
+  build:
+    permissions: write-all
+
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v4
+      name: Checkout Code
+
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v2
+
+    - name: Navigate to Workspace
+      run: cd $GITHUB_WORKSPACE
+
+    - name: Reveal Workspace
+      run: echo "$GITHUB_WORKSPACE"
+
+    - name: Build Solution
+      run: |
+        msbuild.exe BCompareHelper.sln /p:Platform="x64" /p:Configuration="Release"
+
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # This token is provided by Actions, you do not need to create your own token
+      with:
+        tag_name: ${{ github.ref_name }}-${{ github.run_number }}
+        release_name: Release ${{ github.ref_name }}-${{ github.run_number }}
+        body: |
+          Changes in this Release
+          - https://github.com/${{ github.GITHUB_REPOSITORY }}/commits/master
+        draft: false
+        prerelease: true
+
+    - name: Upload Release
+      id: upload-release-asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}  # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps
+        asset_path: x64\Release\BCompareHelper.exe
+        asset_name: BCompareHelper.exe
+        asset_content_type: application/x-exe
