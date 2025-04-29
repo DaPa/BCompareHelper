@@ -1,5 +1,5 @@
-// BCompareHelper.cpp : This file contains the 'main' function. Program execution begins and ends there.
-//
+// https://github.com/DaPa/BCompareHelper
+// https://forum.scootersoftware.com/forum/beyond-compare-4-discussion/general/92292-select-left-file-from-command-line
 
 #include <windows.h>
 #include <iostream>
@@ -7,9 +7,9 @@
 #include <shellapi.h>
 #include <processenv.h>
 #include <strsafe.h>
+#include <sstream>
 
-
-const wchar_t* version = L"version 0.0.1 - 8 Mar 2024";
+const wchar_t* version = L"version 0.0.2 - 29 Apr 2024";
 const int MAX_STR_LEN = 1024;
 static wchar_t msg_buf[MAX_STR_LEN]; // used in many places for string formating
 static bool debug = false;
@@ -43,19 +43,20 @@ static void show_last_error(const wchar_t* error_context, DWORD dw_error = 0)
         dw_error = GetLastError();
     }
 
+    wchar_t err_buf[MAX_STR_LEN];
     // retrieve the system error message for the last-error code
     FormatMessage(
         FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
         NULL,
         dw_error,
         MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-        msg_buf,
+        err_buf,
         MAX_STR_LEN,
         NULL);
     
     // Display the error message
     wchar_t display_buf[2 * MAX_STR_LEN];
-    wsprintf(display_buf, L"%s!\nError code = %d (0x%08x), detail: %s", error_context ? error_context : L"...", dw_error, dw_error, msg_buf);
+    wsprintf(display_buf, L"%s!\nError code = %d (0x%08x), detail: %s", error_context ? error_context : L"...", dw_error, dw_error, err_buf);
     show_message(display_buf);
 }
 
@@ -81,12 +82,59 @@ static int is_valid_path(const wchar_t* path, bool* is_directory, int* path_len)
 
     DWORD ftyp = GetFileAttributesW(path);
     if (ftyp == INVALID_FILE_ATTRIBUTES) {
-        show_last_error(L"GetFileAttributesW");
+        wsprintf(msg_buf, L"GetFileAttributesW error accessing \"%s\"", path);
+        show_last_error(msg_buf);
         return 4;
     }
 
     *is_directory = (ftyp & FILE_ATTRIBUTE_DIRECTORY) ? true : false;
     return 0;
+}
+
+
+static bool fileExists(const std::wstring& path) {
+    DWORD attrs = GetFileAttributesW(path.c_str());
+    return (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY));
+}
+
+static std::wstring findExecutableOnPath(const std::wstring& exeName) {
+    wchar_t* pathEnv = nullptr;
+    size_t len = 0;
+
+    if (_wdupenv_s(&pathEnv, &len, L"PATH") != 0 || pathEnv == nullptr) {
+        return L"";
+    }
+
+    std::wstring pathVar(pathEnv);
+    free(pathEnv);
+
+    std::wstringstream stream(pathVar);
+    std::wstring dir;
+
+    while (std::getline(stream, dir, L';')) {
+        if (dir.empty()) continue;
+
+        // Ensure path ends with backslash
+        if (dir.back() != L'\\' && dir.back() != L'/') {
+            dir += L"\\";
+        }
+
+        std::wstring fullPath = dir + exeName;
+
+        if (fileExists(fullPath)) {
+            return fullPath;
+        }
+
+        // Try with .exe if not already present
+        if (exeName.length() < 4 || exeName.substr(exeName.length() - 4) != L".exe") {
+            std::wstring exePath = fullPath + L".exe";
+            if (fileExists(exePath)) {
+                return exePath;
+            }
+        }
+    }
+
+    return L"";  // Not found
 }
 
 static int check_args(int num_args, const wchar_t** str_args, bool* is_directory, bool* is_saved_left, int* path_len)
@@ -200,6 +248,19 @@ static int compare(HKEY hRegKey, const wchar_t* path, int path_len, bool is_dire
                 return 15;
             }
 
+            std::wstring fullBComparePath = findExecutableOnPath(L"BCompare");
+            if (fullBComparePath.empty()) {
+                std::wcout << L"BCompare is NOT on the PATH." << std::endl;
+                std::wstring hardcodedExeToFind = L"D:\\tools\\totalcmd\\Tools\\Comparers\\BeyondCompare\\amd64\\BCompare.exe";
+                if (fileExists(hardcodedExeToFind)) {
+                    fullBComparePath = hardcodedExeToFind;
+                } else {
+                    wsprintf(msg_buf, L"BCompare not on PATH or hardcoded location \"%s\"", hardcodedExeToFind.c_str());
+                    show_message(msg_buf);
+                    return 16;
+                }
+            }
+
             wchar_t params_buf[2 * MAX_STR_LEN + 256];
             wsprintf(params_buf, L"\"%s\" \"%s\"", left_path, path);
             // launch BCompare with left_buf and path
@@ -220,18 +281,18 @@ static int compare(HKEY hRegKey, const wchar_t* path, int path_len, bool is_dire
                 SE_ERR_PNF
                 SE_ERR_SHARE
             */
-            err_nr = (DWORD)(size_t)ShellExecuteW(NULL, L"open", L"BCompare", params_buf, NULL, SW_SHOW);
+            err_nr = (DWORD)(size_t)ShellExecuteW(NULL, L"open", fullBComparePath.c_str(), params_buf, NULL, SW_SHOW);
             if (err_nr <= SE_ERR_DLLNOTFOUND) {
                 wsprintf(msg_buf, L"ShellExecuteW");
                 show_last_error(msg_buf);
-                return 16;
+                return 17;
             }
 
             err_nr = (DWORD)RegDeleteValueW(hRegKey, subkey);
             if (ERROR_SUCCESS != err_nr) {
                 wsprintf(msg_buf, L"RegDeleteValueW @ '%s'", subkey);
                 show_last_error(msg_buf, err_nr);
-                return 17;
+                return 18;
             }
         }
 
@@ -243,7 +304,7 @@ static int compare(HKEY hRegKey, const wchar_t* path, int path_len, bool is_dire
         if (ERROR_SUCCESS != err_nr) {
             wsprintf(msg_buf, L"RegSetKeyValueW @ '%s'", subkey);
             show_last_error(msg_buf, err_nr);
-            return 18;
+            return 19;
         }
 
     }
@@ -251,6 +312,7 @@ static int compare(HKEY hRegKey, const wchar_t* path, int path_len, bool is_dire
     // success
     return 0;
 }
+
 
 int main()
 {
@@ -265,7 +327,7 @@ int main()
     if(!debug) FreeConsole();
 
     HKEY hRegKey;
-    const wchar_t* key = L"SOFTWARE\\Scooter Software\\Beyond Compare 4\\BcShellEx";
+    const wchar_t* key = L"SOFTWARE\\Scooter Software\\Beyond Compare 5\\BcShellEx";
     DWORD err_nr = (DWORD)RegOpenKeyExW(HKEY_CURRENT_USER, key, 0, KEY_READ | KEY_WRITE, &hRegKey);
     if (ERROR_SUCCESS != err_nr) {
         wsprintf(msg_buf, L"RegOpenKeyExW @ '%s'", key);
@@ -279,19 +341,8 @@ int main()
     if (ERROR_SUCCESS != err_nr) {
         wsprintf(msg_buf, L"RegCloseKey");
         show_last_error(msg_buf, err_nr);
-        return 19;
+        return 20;
     }
 
     return error;
 }
-
-// Run program: Ctrl + F5 or Debug > Start Without Debugging menu
-// Debug program: F5 or Debug > Start Debugging menu
-
-// Tips for Getting Started: 
-//   1. Use the Solution Explorer window to add/manage files
-//   2. Use the Team Explorer window to connect to source control
-//   3. Use the Output window to see build output and other messages
-//   4. Use the Error List window to view errors
-//   5. Go to Project > Add New Item to create new code files, or Project > Add Existing Item to add existing code files to the project
-//   6. In the future, to open this project again, go to File > Open > Project and select the .sln file
